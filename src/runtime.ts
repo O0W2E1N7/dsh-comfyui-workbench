@@ -103,7 +103,7 @@ export function componentStateOf(rt: Runtime): Record<string, boolean> {
  * 在多个 bundle 之间**不共享**。曾因此踩坑：gallery 注册的路由在它自己的副本里，
  * workflow 的 prefix handler 看不到，`/config`、`/workflows` 全 404。
  *
- * 共享状态挂在 `ctx.root` 的属性槽上（见 `sharedOf`），不用 globalThis ——
+ * 共享状态挂在 cordis 根上下文的属性槽上（见 `sharedOf`），不用 globalThis ——
  * 宿主模块加载器下各 bundle 的 globalThis 同样不共享。
  */
 interface Shared {
@@ -119,18 +119,29 @@ interface Shared {
 const SHARED_PROP = '__dshComfyuiWorkbench'
 
 /**
+ * cordis 根上下文的 symbol 键：`Context.root`，其值就是 `Symbol.for('cordis.root')`。
+ * 直接用 Symbol.for 而不是 `import { Context }`，避免给本包引入 cordis 的运行时依赖。
+ */
+const ROOT = Symbol.for('cordis.root')
+
+/**
  * 取共享状态。
  *
- * 关键：锚点是 **ctx.root**，不是 entry 自己的 ctx，也不用 globalThis。
+ * 关键：锚点是 **cordis 根上下文**（`ctx[Context.root]`），不是 entry 自己的 ctx，也不用 globalThis。
  * 已由真实 cordis 4.0.5 实测：每条 entry 的 ctx 是 `parent.extend({ fiber })` 出来的
  * 独立对象（兄弟之间不共享自有属性），而 globalThis 在宿主的模块加载器下同样不共享。
- * 只有 `ctx.root` 是所有 entry 共同的原点。
+ * 只有根上下文是所有 entry 共同的原点。
  */
 function sharedOf(ctx: HostContext): Shared {
   // cordis 里每条 entry 的 ctx 是 `parent.extend({ fiber })` 出来的**独立对象**，
   // 兄弟之间不共享自有属性 —— 挂在 ctx 上等于各建一份（已由真实 cordis 实测确认）。
-  // `ctx.root` 是所有 entry 共同的原点，只有它指向同一个对象。
-  const anchor = ((ctx as unknown as { root?: unknown }).root ?? ctx) as Record<string, Shared | undefined>
+  // 根上下文是所有 entry 共同的原点，只有它指向同一个对象。
+  //
+  // 注意：`ctx.root` 在 cordis 4.0.0-rc.12（DSH 0.2.2-rc.2）起已被移除，读取会抛
+  // `cannot get property "root" without inject`，根上下文改为 `ctx[Context.root]`。
+  // 这里用 symbol 取值：既拿到同一个根上下文，又不触发 inject 校验（symbol 键在
+  // proxy 的 isSpecialProperty 里短路，直接 Reflect.get）。
+  const anchor = ((ctx as unknown as Record<symbol, unknown>)[ROOT] ?? ctx) as Record<string, Shared | undefined>
   let slot = anchor[SHARED_PROP]
   if (slot === undefined) {
     slot = { current: undefined, refs: 0, tables: new Map(), httpMounted: false }
